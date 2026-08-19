@@ -102,7 +102,13 @@ class InitializeInterface(object):
         traffic_manager.set_synchronous_mode(True)
         traffic_manager.set_random_device_seed(0)
         random.seed(0)
-        spawn_points_tm = self.world.get_map().get_spawn_points()
+        try:
+            spawn_points_tm = self.world.get_map().get_spawn_points()
+        except RuntimeError as error:
+            # Some CARLA levels (e.g. certain 0.10 maps) do not expose parseable
+            # OpenDRIVE metadata, so skip NPC traffic setup instead of aborting.
+            print(f"Warning: traffic manager couldn't get map spawn points: {error}")
+            spawn_points_tm = []
         for i, spawn_point in enumerate(spawn_points_tm):
             self.world.debug.draw_string(spawn_point.location, str(i), life_time=10)
         models = [
