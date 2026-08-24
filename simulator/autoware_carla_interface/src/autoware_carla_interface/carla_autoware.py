@@ -27,6 +27,10 @@ from .modules.carla_wrapper import SensorReceivedNoData
 from .modules.carla_wrapper import SensorWrapper
 
 
+class CarlaWorldLoadError(RuntimeError):
+    """Raised when CARLA is not running the map the bridge was asked to load."""
+
+
 class SensorLoop(object):
 
     def __init__(self):
@@ -60,6 +64,7 @@ class InitializeInterface(object):
     def __init__(self):
         self.interface = carla_ros2_interface()
         self.param_ = self.interface.get_param()
+        self.logger = self.interface.logger
         self.world = None
         self.sensor_wrapper = None
         self.ego_actor = None
@@ -99,25 +104,31 @@ class InitializeInterface(object):
         return spawn_point, randomize
 
     def _reload_world(self, client):
-        """Reload the world via client.load_world(), tolerating non-connection failures."""
-        print(f"Loading CARLA world '{self.carla_map}' with client.load_world()", flush=True)
+        """Reload the world via client.load_world(); return the failure, if any."""
+        self.logger.info(f"Loading CARLA world '{self.carla_map}' with client.load_world()")
         try:
             client.load_world(self.carla_map)
-            print(f"Loaded CARLA world '{self.carla_map}'", flush=True)
         except RuntimeError as exc:
-            if "Connection refused" in str(exc):
-                raise
-            print(
-                "WARNING: client.load_world() raised while loading "
-                f"'{self.carla_map}'; continuing with current world: {exc}",
-                flush=True,
+            # Not fatal on its own: some API versions raise after the level has
+            # actually switched. _verify_world_loaded decides, from the map that
+            # is really active, whether this run can continue.
+            self.logger.warning(
+                f"client.load_world() raised while loading '{self.carla_map}': {exc}"
             )
+            return exc
+        return None
+
+    @staticmethod
+    def _normalize_map_name(map_name):
+        """Reduce a CARLA level name such as 'Carla/Maps/Town01' to 'Town01'."""
+        return map_name.split("/")[-1]
 
     def _current_world_map(self, client):
         """Return the current world's map name, or None if it cannot be determined."""
         try:
-            return client.get_world().get_map().name.split("/")[-1]
-        except RuntimeError:
+            return self._normalize_map_name(client.get_world().get_map().name)
+        except RuntimeError as exc:
+            self.logger.warning(f"Failed to query the active CARLA map: {exc}")
             return None
 
     def _load_world_if_different(self, client):
@@ -125,31 +136,51 @@ class InitializeInterface(object):
         if not hasattr(client, "load_world_if_different"):
             return False
         try:
-            print(
-                f"Loading CARLA world '{self.carla_map}' with load_world_if_different()",
-                flush=True,
+            self.logger.info(
+                f"Loading CARLA world '{self.carla_map}' with load_world_if_different()"
             )
             client.load_world_if_different(self.carla_map)
-            print(f"Loaded CARLA world '{self.carla_map}'", flush=True)
             return True
         except RuntimeError as exc:
-            print(
-                "WARNING: load_world_if_different failed; falling back to load_world "
+            self.logger.warning(
+                "load_world_if_different failed; falling back to load_world "
                 f"for '{self.carla_map}': {exc}"
             )
             return False
 
+    def _verify_world_loaded(self, client, load_error):
+        """Raise unless the requested map is the world CARLA is actually running."""
+        expected = self._normalize_map_name(self.carla_map)
+        deadline = time.time() + max(float(self.timeout), 1.0)
+        current = None
+        while True:
+            current = self._current_world_map(client)
+            if current == expected:
+                self.logger.info(f"Loaded CARLA world '{expected}'")
+                return
+            if time.time() >= deadline:
+                break
+            time.sleep(1.0)
+
+        message = (
+            f"CARLA world mismatch: requested map '{expected}' but the active world is "
+            f"'{current if current is not None else 'unknown'}'. Continuing would run "
+            "Autoware against a map the simulator is not simulating, so the bridge is "
+            "aborted."
+        )
+        self.logger.error(message)
+        raise CarlaWorldLoadError(message) from load_error
+
     def _load_carla_world(self, client):
         """Load the requested map while supporting CARLA Python API version differences."""
+        load_error = None
         if self.force_load_world:
-            self._reload_world(client)
-            return
+            load_error = self._reload_world(client)
+        elif not self._load_world_if_different(client):
+            if self._current_world_map(client) != self._normalize_map_name(self.carla_map):
+                load_error = self._reload_world(client)
 
-        if self._load_world_if_different(client):
-            return
-
-        if self._current_world_map(client) != self.carla_map:
-            self._reload_world(client)
+        self._verify_world_loaded(client, load_error)
 
     def _setup_traffic_manager(self, client):
         """Configure traffic manager with NPC vehicles."""
@@ -305,13 +336,17 @@ class InitializeInterface(object):
 def main():
     """Run the CARLA-Autoware bridge with proper cleanup on all exit paths."""
     carla_bridge = InitializeInterface()
-    carla_bridge.load_world()
-
-    # Register signal handlers for graceful shutdown
-    signal.signal(signal.SIGINT, carla_bridge._stop_loop)
-    signal.signal(signal.SIGTERM, carla_bridge._stop_loop)
 
     try:
+        # Loading the world is inside the try so that a failure here, a map
+        # mismatch above all, shuts the ROS interface down instead of leaving
+        # the non-daemon spin thread keeping a half-initialized process alive.
+        carla_bridge.load_world()
+
+        # Register signal handlers for graceful shutdown
+        signal.signal(signal.SIGINT, carla_bridge._stop_loop)
+        signal.signal(signal.SIGTERM, carla_bridge._stop_loop)
+
         carla_bridge.run_bridge()
     except KeyboardInterrupt:
         print("\nReceived keyboard interrupt, shutting down...")

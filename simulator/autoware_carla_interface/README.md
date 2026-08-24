@@ -295,6 +295,13 @@ The `carla_ros.py` sets up the CARLA world:
    self.world = client.get_world()
    ```
 
+   After loading, the interface checks that the map CARLA is actually running is
+   the one that was requested. If it is not - the level does not exist, the
+   server failed to switch, or the connection dropped - the mismatch is logged to
+   `rosout` and the node aborts with `CarlaWorldLoadError`. Running Autoware
+   against a map the simulator is not simulating would silently invalidate the
+   whole run, so it is treated as fatal rather than tolerated.
+
 3. **Spawn Ego Vehicle**:
 
    Vehicle are spawn according to `vehicle_type`, `spawn_point`, and `agent_role_name` parameter.
