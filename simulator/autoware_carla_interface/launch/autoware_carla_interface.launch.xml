@@ -23,8 +23,16 @@
     <arg name="min_positive_throttle" default="0.0" description="Minimum throttle applied while accelerating from (near) standstill; heavy CARLA vehicles never start on small actuation-map throttle"/>
     <arg name="min_positive_throttle_speed_threshold" default="0.8" description="Apply min_positive_throttle only below this speed [m/s]; negative = always"/>
     <arg name="no_rendering_mode" default="False" description="Disable CARLA rendering via world settings for headless/faster simulation"/>
-    <arg name="map_origin_x" default="0.0" description="X offset from the CARLA world origin to the Autoware map frame origin (0.0 = auto-derive from the OpenDRIVE geoReference for georeferenced maps; stays 0.0 for stock CARLA towns)"/>
-    <arg name="map_origin_y" default="0.0" description="Y offset from the CARLA world origin to the Autoware map frame origin (0.0 = auto-derive from the OpenDRIVE geoReference for georeferenced maps; stays 0.0 for stock CARLA towns)"/>
+    <arg
+      name="map_origin_x"
+      default="0.0"
+      description="X offset from the CARLA world origin to the Autoware map frame origin (0.0 = auto-derive from the OpenDRIVE geoReference for georeferenced maps; stays 0.0 for stock CARLA towns)"
+    />
+    <arg
+      name="map_origin_y"
+      default="0.0"
+      description="Y offset from the CARLA world origin to the Autoware map frame origin (0.0 = auto-derive from the OpenDRIVE geoReference for georeferenced maps; stays 0.0 for stock CARLA towns)"
+    />
 
     <arg
       name="carla_map"
@@ -53,6 +61,13 @@
     <arg name="sensor_mapping_file" default="$(var sensor_mapping_file_default)" description="Path to sensor mapping YAML"/>
     <arg name="flatten_steering_curve" default="false" description="Replace the ego vehicle's speed-based steering curve with an identity curve (CARLA 0.10 corrupt-curve workaround)"/>
 
+    <!-- Scenario AutowareBridge (closed-loop with the CARLA scenario library).
+         Pass ego_vehicle_role_name:=Ego so the scenario framework can attach to
+         the ego this interface node spawns. -->
+    <arg name="launch_autoware_bridge" default="true" description="Launch the autoware_bridge node that drives Autoware from a scenario mission over gRPC and reports readiness"/>
+    <arg name="bridge_address" default="localhost:50052" description="host:port of the scenario-library AutowareBridge gRPC server to dial"/>
+    <arg name="auto_engage" default="true" description="Auto change_to_autonomous once localization is initialized, the route is set, and autonomous mode is available (scenario/sim only)"/>
+
     <!-- CARLA Interface -->
     <node pkg="autoware_carla_interface" exec="autoware_carla_interface" name="autoware_carla_interface" output="screen">
       <param name="host" value="$(var host)"/>
@@ -78,6 +93,14 @@
       <param name="sensor_kit_name" value="$(var sensor_kit_name)"/>
       <param name="sensor_mapping_file" value="$(var sensor_mapping_file)"/>
       <param name="flatten_steering_curve" value="$(var flatten_steering_curve)"/>
+    </node>
+
+    <!-- Scenario bridge: pull the mission (initial pose + goal) from the scenario
+         library over gRPC, drive Autoware's localization init / routing / engage,
+         and report readiness back. -->
+    <node pkg="autoware_carla_interface" exec="autoware_bridge" name="autoware_bridge" output="screen" if="$(var launch_autoware_bridge)">
+      <param name="bridge_address" value="$(var bridge_address)"/>
+      <param name="auto_engage" value="$(var auto_engage)"/>
     </node>
 
     <arg name="input_control_cmd" default="/control/command/control_cmd"/>
