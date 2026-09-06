@@ -138,7 +138,7 @@ class AutowareBridgeNode(Node):
         # E2E, localization:=false).  Defaults match the mainline; set both False
         # to skip the /api/localization/initialize call and drop the localization
         # requirement from readiness.
-        self._initialize_localization = (
+        self._initialize_localization_enabled = (
             self.declare_parameter("initialize_localization", True).get_parameter_value().bool_value
         )
         require_localization = (
@@ -282,7 +282,7 @@ class AutowareBridgeNode(Node):
         that localize outside the AD API (CARLA ground-truth / E2E).  The mainline
         call is kept below, gated by the parameter.
         """
-        if not self._initialize_localization:
+        if not self._initialize_localization_enabled:
             self.get_logger().info(
                 "localization init skipped (initialize_localization=false; "
                 "localization is handled outside the AD API)"
