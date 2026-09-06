@@ -68,7 +68,7 @@
     <arg
       name="initialize_localization"
       default="true"
-      description="Call /api/localization/initialize from the mission initial pose; set false for stacks that localize outside the AD API (CARLA ground-truth / E2E, localization:=false)"
+      description="Call /api/localization/initialize from the mission initial pose. Set false for stacks that localize outside the AD API (CARLA ground-truth / E2E, localization:=false), and also for a CARLA stack that already initializes itself from GNSS: re-initializing a stack that has converged destabilizes localization, which drops autonomous mode and stops the vehicle mid-scenario"
     />
     <arg
       name="require_localization_initialized"
