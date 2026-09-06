@@ -68,6 +68,7 @@ class carla_ros2_interface(object):
             "host": (rclpy.Parameter.Type.STRING, None),
             "port": (rclpy.Parameter.Type.INTEGER, None),
             "sync_mode": (rclpy.Parameter.Type.BOOL, None),
+            "own_world_clock": (rclpy.Parameter.Type.BOOL, True),
             "timeout": (rclpy.Parameter.Type.INTEGER, None),
             "fixed_delta_seconds": (rclpy.Parameter.Type.DOUBLE, None),
             "carla_map": (rclpy.Parameter.Type.STRING, None),

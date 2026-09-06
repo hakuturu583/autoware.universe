@@ -42,6 +42,11 @@ class SensorLoop(object):
         self.running = False
         self.timestamp_last_run = 0.0
         self.timeout = 20.0
+        #: Whether this loop drives the simulation.  The bridge is the clock
+        #: master in synchronous mode and must tick the world; when something
+        #: else owns the clock -- a scenario runner stepping the same world --
+        #: ticking from here would step it twice per frame.
+        self.owns_clock = True
 
     def _stop_loop(self):
         self.running = False
@@ -56,7 +61,7 @@ class SensorLoop(object):
             except SensorReceivedNoData as e:
                 raise RuntimeError(e)
             self.ego_actor.apply_control(ego_action)
-        if self.running:
+        if self.running and self.owns_clock:
             CarlaDataProvider.get_world().tick()
 
 
@@ -76,6 +81,7 @@ class InitializeInterface(object):
         self.port = self.param_["port"]
         self.timeout = self.param_["timeout"]
         self.sync_mode = self.param_["sync_mode"]
+        self.own_world_clock = self.param_["own_world_clock"]
         self.fixed_delta_seconds = self.param_["fixed_delta_seconds"]
         self.carla_map = self.param_["carla_map"]
         self.agent_role_name = self.param_["ego_vehicle_role_name"]
@@ -360,11 +366,22 @@ class InitializeInterface(object):
             # In this case, just wait a bit more
             time.sleep(1.0)
 
-        settings = self.world.get_settings()
-        settings.fixed_delta_seconds = self.fixed_delta_seconds
-        settings.synchronous_mode = self.sync_mode
-        settings.no_rendering_mode = self.no_rendering_mode
-        self.world.apply_settings(settings)
+        if self.own_world_clock:
+            settings = self.world.get_settings()
+            settings.fixed_delta_seconds = self.fixed_delta_seconds
+            settings.synchronous_mode = self.sync_mode
+            settings.no_rendering_mode = self.no_rendering_mode
+            self.world.apply_settings(settings)
+        else:
+            # Whoever owns the clock has already chosen these; overwriting them
+            # would take the world out from under it.
+            settings = self.world.get_settings()
+            print(
+                "own_world_clock=False: leaving the world settings to the "
+                f"external clock owner (synchronous_mode={settings.synchronous_mode}, "
+                f"fixed_delta_seconds={settings.fixed_delta_seconds})",
+                flush=True,
+            )
         CarlaDataProvider.set_world(self.world)
         CarlaDataProvider.set_client(client)
 
@@ -398,6 +415,7 @@ class InitializeInterface(object):
         self.bridge_loop.ego_actor = self.ego_actor
         self.bridge_loop.start_system_time = time.time()
         self.bridge_loop.start_game_time = GameTime.get_time()
+        self.bridge_loop.owns_clock = self.own_world_clock
         self.bridge_loop.running = True
         while self.bridge_loop.running:
             timestamp = None
