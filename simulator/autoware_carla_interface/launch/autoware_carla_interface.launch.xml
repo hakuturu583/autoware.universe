@@ -109,6 +109,7 @@
          drive Autoware's localization init / routing / engage and report readiness.
          Only launched when with_scenario is non-empty. -->
     <node pkg="autoware_carla_interface" exec="autoware_bridge" name="autoware_bridge" output="screen" if="$(eval &quot;'$(var with_scenario)'.strip() != ''&quot;)">
+      <param name="use_sim_time" value="$(var use_sim_time)"/>
       <!-- type="str" so a spec that looks like YAML (a leading '#', a bare number, ...)
            reaches the node verbatim instead of aborting the launch -->
       <param name="scenario" value="$(var with_scenario)" type="str"/>
