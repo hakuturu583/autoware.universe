@@ -149,6 +149,15 @@ class AutowareBridgeNode(Node):
         self._map_frame = (
             self.declare_parameter("map_frame", "map").get_parameter_value().string_value
         )
+        # A scenario's goal is also its pass criterion, so the route request
+        # keeps it fixed by default: with goal modification allowed Autoware may
+        # stop at a nearby feasible pose instead -- in the ego's own lane, for
+        # instance, which silently turns a lane change into a straight drive.
+        self._allow_goal_modification = (
+            self.declare_parameter("allow_goal_modification", False)
+            .get_parameter_value()
+            .bool_value
+        )
         self._rpc_timeout_s = (
             self.declare_parameter("rpc_timeout_s", 5.0).get_parameter_value().double_value
         )
@@ -346,7 +355,7 @@ class AutowareBridgeNode(Node):
         request = SetRoutePoints.Request()
         request.header.frame_id = self._map_frame
         request.header.stamp = self.get_clock().now().to_msg()
-        request.option.allow_goal_modification = True
+        request.option.allow_goal_modification = self._allow_goal_modification
         request.goal = _to_ros_pose(goal)
         future = self._route_cli.call_async(request)
         future.add_done_callback(lambda f: self._log_response("route set", f))

@@ -58,6 +58,11 @@
          closed loop; empty (the default) leaves the bridge off, i.e. the current
          behavior. Pass ego_vehicle_role_name:=Ego so the scenario framework can
          attach to the ego this interface node spawns. -->
+    <!-- Let Autoware move the goal to a nearby feasible pose when the one the
+         scenario handed over cannot be reached exactly.  Off by default: the
+         scenario's goal is what its pass conditions are written against. -->
+    <arg name="allow_goal_modification" default="False"/>
+
     <arg
       name="with_scenario"
       default=""
@@ -117,6 +122,7 @@
       <param name="auto_engage" value="$(var auto_engage)"/>
       <param name="initialize_localization" value="$(var initialize_localization)"/>
       <param name="require_localization_initialized" value="$(var require_localization_initialized)"/>
+      <param name="allow_goal_modification" value="$(var allow_goal_modification)"/>
     </node>
 
     <arg name="input_control_cmd" default="/control/command/control_cmd"/>
