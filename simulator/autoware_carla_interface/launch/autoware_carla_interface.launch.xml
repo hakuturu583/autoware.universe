@@ -58,6 +58,12 @@
          closed loop; empty (the default) leaves the bridge off, i.e. the current
          behavior. Pass ego_vehicle_role_name:=Ego so the scenario framework can
          attach to the ego this interface node spawns. -->
+    <!-- A scenario runner steps the world itself, so the bridge must not tick
+         it as well: two clients ticking one synchronous world advance it twice
+         per frame, and the ego's control is then applied every other step. -->
+    <let name="own_world_clock" value="False" if="$(eval &quot;'$(var with_scenario)'.strip() != ''&quot;)"/>
+    <let name="own_world_clock" value="True" unless="$(eval &quot;'$(var with_scenario)'.strip() != ''&quot;)"/>
+
     <!-- Let Autoware move the goal to a nearby feasible pose when the one the
          scenario handed over cannot be reached exactly.  Off by default: the
          scenario's goal is what its pass conditions are written against. -->
@@ -87,6 +93,7 @@
       <param name="port" value="$(var port)"/>
       <param name="timeout" value="$(var timeout)"/>
       <param name="sync_mode" value="$(var sync_mode)"/>
+      <param name="own_world_clock" value="$(var own_world_clock)"/>
       <param name="fixed_delta_seconds" value="$(var fixed_delta_seconds)"/>
       <param name="carla_map" value="$(var carla_map_resolved)"/>
       <param name="ego_vehicle_role_name" value="$(var ego_vehicle_role_name)"/>
