@@ -155,6 +155,13 @@ class AutowareBridgeNode(Node):
         mission_poll_period_s = (
             self.declare_parameter("mission_poll_period_s", 0.5).get_parameter_value().double_value
         )
+        # The mission can arrive before Autoware can act on it (a scenario hands
+        # it over as soon as the ego actor exists, minutes before localization
+        # converges), and AD API then rejects the calls.  Retry them at this
+        # period until the state topics confirm they took.
+        self._retry_period_s = (
+            self.declare_parameter("startup_retry_period_s", 2.0).get_parameter_value().double_value
+        )
         scenario_spec = self.declare_parameter("scenario", "").get_parameter_value().string_value
 
         # Optionally launch the scenario package's Docker image (which hosts the
@@ -167,8 +174,10 @@ class AutowareBridgeNode(Node):
         self._mission: Optional[pb2.GetMissionResponse] = None
         self._engage_requested = False
         self._readiness_reported = False
+        self._startup_timer = None
 
         group = ReentrantCallbackGroup()
+        self._group = group
 
         self._init_cli = self.create_client(
             InitializeLocalization,
@@ -272,8 +281,31 @@ class AutowareBridgeNode(Node):
         self._mission = mission
         self._mission_timer.cancel()
         self.get_logger().info("Received scenario mission; initializing Autoware")
-        self._initialize_localization(mission.initial_pose)
-        self._set_route(mission.goal)
+        self._run_startup_step()
+        self._startup_timer = self.create_timer(
+            self._retry_period_s, self._run_startup_step, callback_group=self._group
+        )
+
+    def _run_startup_step(self) -> None:
+        """Drive localization init and routing until the AD API accepts them.
+
+        Both calls fail while Autoware is still coming up -- routing needs a
+        localized ego -- and the AD API answers with a failure status rather than
+        an error, so this repeats them until :class:`ReadinessAggregator` sees
+        the resulting state, then stops.
+        """
+        if self._mission is None:
+            return
+        localization_pending = (
+            self._initialize_localization_enabled and not self._aggregator.localization_initialized
+        )
+        if localization_pending:
+            self._initialize_localization(self._mission.initial_pose)
+        if not self._aggregator.route_set:
+            self._set_route(self._mission.goal)
+        elif not localization_pending and self._startup_timer is not None:
+            self._startup_timer.cancel()
+            self._startup_timer = None
 
     def _initialize_localization(self, initial_pose: pb2.Pose) -> None:
         """Call ``/api/localization/initialize`` at *initial_pose*.
@@ -302,9 +334,7 @@ class AutowareBridgeNode(Node):
         stamped.pose.covariance = _INITIAL_POSE_COVARIANCE
         request.pose = [stamped]
         future = self._init_cli.call_async(request)
-        future.add_done_callback(
-            lambda f: self.get_logger().info("localization initialize requested")
-        )
+        future.add_done_callback(lambda f: self._log_response("localization initialize", f))
 
     def _set_route(self, goal: pb2.Pose) -> None:
         """Call ``/api/routing/set_route_points`` to *goal*."""
@@ -319,7 +349,7 @@ class AutowareBridgeNode(Node):
         request.option.allow_goal_modification = True
         request.goal = _to_ros_pose(goal)
         future = self._route_cli.call_async(request)
-        future.add_done_callback(lambda f: self.get_logger().info("route set requested"))
+        future.add_done_callback(lambda f: self._log_response("route set", f))
 
     # ------------------------------------------------------------------
     # AD API state -> engage + readiness
@@ -339,6 +369,35 @@ class AutowareBridgeNode(Node):
         )
         self._advance()
 
+    def _log_response(self, what: str, future) -> bool:
+        """Log an AD API response and report whether the call was accepted.
+
+        A rejected call is otherwise silent: the AD API answers with a failure
+        status, not an exception, so nothing distinguishes it from success.
+        """
+        try:
+            status = future.result().status
+        except Exception as error:  # noqa: BLE001 - never break the callback
+            self.get_logger().warning(f"{what} failed: {error}")
+            return False
+        if status.success:
+            self.get_logger().info(f"{what} accepted")
+            return True
+        self.get_logger().warning(
+            f"{what} rejected (code {status.code}): {status.message}; retrying"
+        )
+        return False
+
+    def _on_engage_response(self, future) -> None:
+        """Allow a later state update to retry an engage the AD API refused.
+
+        ``change_to_autonomous`` is rejected while the mode is not available yet
+        (diagnostics still settling), and without this the one-shot guard would
+        leave the ego parked for the rest of the run.
+        """
+        if not self._log_response("change_to_autonomous", future):
+            self._engage_requested = False
+
     def _advance(self) -> None:
         """React to a state change: engage when possible, report when ready."""
         if self._mission is None:
@@ -356,7 +415,7 @@ class AutowareBridgeNode(Node):
             return
         self._engage_requested = True
         future = self._engage_cli.call_async(ChangeOperationMode.Request())
-        future.add_done_callback(lambda f: self.get_logger().info("change_to_autonomous requested"))
+        future.add_done_callback(self._on_engage_response)
 
     def _maybe_report_ready(self) -> None:
         """Push ``ReportReadiness(True)`` once Autoware is ready."""
