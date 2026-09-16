@@ -21,6 +21,8 @@
     "Lambdify",
     "libacados",
     "libtensorrt",
+    "lichtblick",
+    "nullrhi",
     "psidot",
     "Psidot",
     "Psi̇",
