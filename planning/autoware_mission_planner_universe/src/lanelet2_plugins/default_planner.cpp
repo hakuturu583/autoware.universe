@@ -432,6 +432,16 @@ PlannerPlugin::LaneletRoute DefaultPlanner::plan(const RoutePoints & points)
     }
   }
 
+  // Bail out if the planned path is empty. Downstream route_handler calls
+  // (createMapSegments -> getMainLanelets, refine_goal_height) index into the path with back() and
+  // would dereference an invalid lanelet and segfault on an empty path. This can happen when fewer
+  // than two checkpoints are given, or when planPathLaneletsBetweenCheckpoints reports success but
+  // yields no lanelets.
+  if (all_route_lanelets_or_areas.empty()) {
+    RCLCPP_WARN(logger, "Failed to plan route: empty path.");
+    return route_msg;
+  }
+
   for (const auto & elem : all_route_lanelets_or_areas) {
     if (elem.isLanelet()) {
       RCLCPP_INFO(logger, "Planned lanelet id: %ld", elem.id());
