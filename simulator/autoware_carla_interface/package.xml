@@ -35,12 +35,18 @@
   <depend>tf2</depend>
   <depend>tf2_ros</depend>
   <depend>tier4_vehicle_msgs</depend>
+  <!-- Python-only dependency (used from carla_ros.py / splatsim). Keep it as an
+       exec_depend so ament_auto does not find_package() it at build time, which
+       would trip its ament_cmake export in downstream configuration. -->
 
   <!-- C++ dependencies for utility nodes -->
+
+  <!-- Python dependencies for SplatSim integration -->
 
   <buildtool_depend>ament_cmake</buildtool_depend>
   <buildtool_depend>ament_cmake_python</buildtool_depend>
   <buildtool_depend>autoware_cmake</buildtool_depend>
+  <buildtool_depend>python3-grpc-tools</buildtool_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>autoware_lint_common</test_depend>

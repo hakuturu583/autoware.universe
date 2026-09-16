@@ -594,6 +594,10 @@ class InitializeInterface(object):
         # (and was buffered) during startup.
         self.interface.on_world_ready()
 
+        # Initialize splatsim cameras and lidars after CARLA world and ego actor are ready
+        self.interface.init_splatsim_cameras()
+        self.interface.init_splatsim_lidars()
+
         # No-op unless traffic_light.force_green is enabled.
         self._force_green_traffic_lights()
 
