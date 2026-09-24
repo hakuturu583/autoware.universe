@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections import deque
 from collections import namedtuple
 import math
 import threading
@@ -245,6 +246,14 @@ class carla_ros2_interface(object):
             # 70 deg but only achieves roughly a third of it, so calibrating
             # this to the measured full-steer angle restores a unity gain.
             "max_wheel_steer_angle_deg": (rclpy.Parameter.Type.DOUBLE, 0.0),
+            # Exponent n in the server's `tyre angle = steer ** n * max_steer`
+            # law, and the commanded angle below which its inverse is held
+            # linear so the gain near straight ahead stays bounded. Both are
+            # chassis properties, so they normally come from
+            # config/vehicle_physics.yaml; declared here so they can also be
+            # bisected at runtime with `ros2 param set`.
+            "steer_response_exponent": (rclpy.Parameter.Type.DOUBLE, 1.0),
+            "steer_response_linear_below_deg": (rclpy.Parameter.Type.DOUBLE, 0.0),
             # Replace the ego vehicle's speed-based steering curve with an
             # identity curve (workaround for the corrupt curve data CARLA 0.10
             # returns, which attenuates steering at driving speeds).
@@ -305,6 +314,36 @@ class carla_ros2_interface(object):
             else:
                 self.ros2_node.declare_parameter(param_name, param_type)
             self.param_values[param_name] = self.ros2_node.get_parameter(param_name).value
+
+        self.ros2_node.add_on_set_parameters_callback(self._on_set_parameters)
+
+    #: Parameters that may be changed at runtime with `ros2 param set`. Most
+    #: parameters are consumed once at start-up, so accepting a live change for
+    #: them would silently do nothing; only the steering calibration, which has
+    #: to be bisected against the driving vehicle, is re-read here.
+    LIVE_PARAMETERS = (
+        "max_wheel_steer_angle_deg",
+        "steer_response_exponent",
+        "steer_response_linear_below_deg",
+    )
+
+    def _on_set_parameters(self, params):
+        """Apply a runtime `ros2 param set` for the parameters that support it.
+
+        The steer conversion caches the calibrated full-steer angle, so the
+        cache is dropped here and rebuilt from the new value on the next
+        command.
+        """
+        from rcl_interfaces.msg import SetParametersResult
+
+        for param in params:
+            if param.name not in self.LIVE_PARAMETERS:
+                continue
+            self.param_values[param.name] = param.value
+            if param.name == "max_wheel_steer_angle_deg":
+                self._max_steer_angle_rad = None
+            self.logger.info(f"{param.name} set to {param.value}")
+        return SetParametersResult(successful=True)
 
     def _initialize_clock_publisher(self):
         """Initialize and publish initial clock message."""
@@ -597,6 +636,16 @@ class carla_ros2_interface(object):
         self.timestamp = None
         self.ego_actor = None
         self.physics_control = None
+        # CARLA 0.10 (Chaos) get_velocity() reports a diverging/garbage value even while the
+        # body's position integrates correctly, so on 0.10 the reported ego velocity (control
+        # feedback + odometry twist) is derived from GT position deltas instead. The GT position
+        # also carries per-tick jitter, so the velocity is taken as a least-squares slope of
+        # position vs time over a short window; _derived_velocity holds that world-frame value.
+        self._vel_samples = deque()
+        self._derived_velocity = carla.Vector3D(0.0, 0.0, 0.0)
+        # Steer fraction actually applied to CARLA; used to synthesize the steering feedback on
+        # 0.10 where get_control().steer reads back 0 (see control_callback / _steering_tire_angle).
+        self._applied_steer_norm = 0.0
         # Map origin (CARLA->map offset) is resolved once the world/map is
         # loaded (on_world_ready); None until then. An initialpose that arrives
         # before that is buffered here and applied on_world_ready.
@@ -1154,8 +1203,72 @@ class carla_ros2_interface(object):
         self.prev_timestamp = self.timestamp
         return steer_output
 
+    def _update_derived_velocity(self, location):
+        """Refresh the position-derived world-frame ego velocity (needs _state_lock held).
+
+        CARLA 0.10 (UE5/Chaos) reports a garbage, diverging get_velocity() for the ego even
+        while its position integrates correctly (observed: body moves at ~3 m/s but the twist
+        climbs to 20-30+ m/s and oscillates). Feeding that back into the longitudinal
+        controller makes it believe the car is far over target and slam the brake, which
+        destabilises the whole control loop and runs the ego away. The GT position is reliable,
+        so derive velocity from consecutive positions and lightly smooth it. Called once per
+        tick (top of run_step) so both the odometry twist and VelocityReport read one value.
+        """
+        t = self.timestamp
+        if t is None:
+            return
+        self._vel_samples.append((t, location.x, location.y, location.z))
+        # Keep ~1 s of history. On CARLA 0.10 the body vibrates: the position oscillates by metres
+        # every tick while the true motion only drifts slowly, so a difference-based velocity (even
+        # median-filtered) reads the vibration, not the drift. A least-squares slope of position vs
+        # time over the window recovers the drift and averages the oscillation out.
+        window = 1.0
+        while len(self._vel_samples) > 2 and t - self._vel_samples[0][0] > window:
+            self._vel_samples.popleft()
+        n = len(self._vel_samples)
+        if n >= 3:
+            tm = sum(s[0] for s in self._vel_samples) / n
+            xm = sum(s[1] for s in self._vel_samples) / n
+            ym = sum(s[2] for s in self._vel_samples) / n
+            zm = sum(s[3] for s in self._vel_samples) / n
+            stt = sum((s[0] - tm) ** 2 for s in self._vel_samples)
+            if stt > 1e-6:
+                vx = sum((s[0] - tm) * (s[1] - xm) for s in self._vel_samples) / stt
+                vy = sum((s[0] - tm) * (s[2] - ym) for s in self._vel_samples) / stt
+                vz = sum((s[0] - tm) * (s[3] - zm) for s in self._vel_samples) / stt
+                self._derived_velocity = carla.Vector3D(vx, vy, vz)
+
+    def _ego_velocity_world(self):
+        """World-frame ego velocity to report. Needs _state_lock held.
+
+        0.9.x (PhysX) uses the measured get_velocity() directly. On CARLA 0.10 (Chaos)
+        get_velocity() is accurate at normal speeds but intermittently diverges to garbage
+        (tens/hundreds of m/s) while the body's position barely moves, so prefer it while it
+        agrees with the position-derived velocity (lag-free) and fall back to the position
+        derivative once the two disagree by a wide margin (the getter has gone bad).
+        """
+        raw = self.ego_actor.get_velocity()
+        if not self.uses_chaos_physics:
+            return raw
+        raw_mag = math.sqrt(raw.x * raw.x + raw.y * raw.y + raw.z * raw.z)
+        d = self._derived_velocity
+        drift_mag = math.sqrt(d.x * d.x + d.y * d.y + d.z * d.z)
+        if abs(raw_mag - drift_mag) <= 2.0 + 0.5 * drift_mag:
+            return raw
+        return d
+
     def _ego_speed_mps(self):
-        """Return the ego speed in m/s (needs _state_lock held)."""
+        """Return the ego speed in m/s (needs _state_lock held).
+
+        Uses the cached position-derived velocity rather than calling get_velocity(): this is
+        invoked from control_callback (a ROS-executor thread) and issuing a CARLA actor query
+        there races with the world.tick() on the main thread, which corrupts the Chaos physics.
+        On 0.10 the derived velocity is the reliable signal anyway; 0.9.x still has the measured
+        get_velocity() available through _ego_velocity_world() for the reports.
+        """
+        if self.uses_chaos_physics:
+            d = self._derived_velocity
+            return math.sqrt(d.x * d.x + d.y * d.y + d.z * d.z)
         velocity = self.ego_actor.get_velocity()
         return math.sqrt(
             velocity.x * velocity.x + velocity.y * velocity.y + velocity.z * velocity.z
@@ -1196,9 +1309,20 @@ class carla_ros2_interface(object):
         """
         if not self.param_values.get("wake_sleeping_physics", False):
             return
-        if out_cmd.throttle <= 0.0 or in_cmd.actuation.brake_cmd > 0.0:
+        # Fire whenever the body is genuinely at rest and the stack is NOT deliberately braking to
+        # a stop. The old condition also required out_cmd.throttle > 0, but when the ego stalls
+        # mid-route the controller often holds a tiny decel (throttle 0, small brake) even though
+        # the plan still wants to move, so the kick never fired and the body stayed asleep. Only a
+        # firm brake (a real stop / red light / goal) inhibits it, so intentional stopping is kept.
+        if in_cmd.actuation.brake_cmd > 0.2:
             return
-        if self._ego_speed_mps() >= 0.05:
+        # Gate on the position-derived speed, NOT get_velocity()/_ego_speed_mps(): on 0.10
+        # get_velocity() intermittently glitches to ~0 while the vehicle is actually rolling, so
+        # gating on it could fire mid-drive. The position derivative only reads ~0 at a genuine
+        # standstill, so the kick fires to launch from rest (initial start, or after the ego has
+        # come to a stop) but never while rolling.
+        d = self._derived_velocity
+        if math.sqrt(d.x * d.x + d.y * d.y + d.z * d.z) >= 0.05:
             return
         wake_yaw = math.radians(self.ego_actor.get_transform().rotation.yaw)
         self.ego_actor.set_target_velocity(
@@ -1214,15 +1338,16 @@ class carla_ros2_interface(object):
         """
         out_cmd = carla.VehicleControl()
         out_cmd.throttle = in_cmd.actuation.accel_cmd
-        # Keep the vehicle in first gear with manual shifting so heavy vehicles
-        # respond to throttle immediately instead of idling in neutral.
-        out_cmd.gear = 1
-        out_cmd.manual_gear_shift = True
 
         with self._state_lock:
             # convert base on steer curve of the vehicle
             if not self.physics_control or not self.ego_actor:
                 return  # Skip if vehicle not initialized yet
+
+            # Keep the vehicle in first gear with manual shifting so heavy vehicles
+            # respond to throttle immediately instead of idling in neutral.
+            out_cmd.gear = 1
+            out_cmd.manual_gear_shift = True
 
             self._apply_min_positive_throttle(out_cmd, in_cmd)
             self._wake_sleeping_physics(out_cmd, in_cmd)
@@ -1237,6 +1362,11 @@ class carla_ros2_interface(object):
                 out_cmd.steer = self._legacy_steer_cmd(in_cmd)
             out_cmd.brake = in_cmd.actuation.brake_cmd
             self.current_control = out_cmd
+            # Cache the steer fraction we actually applied. On CARLA 0.10 get_control().steer
+            # reads back 0, so the synthesized steering feedback (see _steering_tire_angle) would
+            # always report 0 and starve the lateral controller of feedback; report this applied
+            # value instead.
+            self._applied_steer_norm = out_cmd.steer
 
     def _chaos_steer_cmd(self, in_cmd):
         """Steer fraction for CARLA 0.10+ (Chaos physics). Needs _state_lock held.
@@ -1245,7 +1375,9 @@ class carla_ros2_interface(object):
         control_cmd.steering_tire_angle through), while VehicleControl.steer
         expects a fraction of the wheel's max steer angle in [-1, 1]. Normalize by
         the max wheel angle; the sign flips because Autoware is CCW-positive and
-        CARLA CW-positive.
+        CARLA is CW-positive (CARLA/UE5 is LEFT-handed, so VehicleControl.steer > 0
+        turns the vehicle RIGHT). A wrong sign here inverts every steering command
+        and the ego turns opposite to the reference trajectory.
 
         The simulator then scales that fraction by the vehicle's steering_curve
         before turning the wheels, and CARLA 0.10 both ships a curve that halves
@@ -1259,8 +1391,63 @@ class carla_ros2_interface(object):
         steer_norm = -in_cmd.actuation.steer_cmd / (
             self._max_wheel_steer_angle_rad() * curve_factor
         )
+        steer_norm = self._invert_steer_response(steer_norm)
         steer_norm = max(-1.0, min(1.0, steer_norm))
         return self.first_order_steering(steer_norm)
+
+    def _steer_response_exponent(self):
+        """Exponent n in the server's ``tyre angle = steer ** n * max_steer`` law.
+
+        1.0 (the default) is the proportional law the conversion above assumes.
+        Some CARLA 0.10 chassis are not proportional: measured on
+        vehicle.byd.j6gen2, curvature follows steer**2 exactly (one wheel base of
+        5.4 m fits steer 0.15/0.30/0.50 and both signs, while the proportional law
+        spreads the implied wheel base over 36.7-11.0 m). Configured per blueprint
+        in config/vehicle_physics.yaml, since it is a property of the chassis.
+        """
+        return float(self.param_values.get("steer_response_exponent", 1.0))
+
+    def _steer_response_blend_norm(self):
+        """Normalized angle below which the response inverse is kept linear.
+
+        Configured as a commanded tire angle in degrees
+        (``steer_response_linear_below_deg``) and converted with the same
+        calibrated full-steer angle the command path normalizes by, so the
+        configured value reads as the angle it is. 0 disables the linear region.
+        """
+        degrees = float(self.param_values.get("steer_response_linear_below_deg", 0.0))
+        if degrees <= 0.0:
+            return 0.0
+        calibrated = self._max_wheel_steer_angle_rad()
+        if calibrated <= 0.0:
+            return 0.0
+        return min(math.radians(degrees) / calibrated, 1.0)
+
+    def _invert_steer_response(self, steer_norm):
+        """Undo the server's steer -> tyre angle law so the ego reaches the command.
+
+        With ``tyre angle = steer ** n * max_steer`` the fraction to send for a
+        normalized angle is that angle to the power 1/n. n = 1 leaves the value
+        untouched, so this is a no-op for chassis with a proportional response.
+
+        For n > 1 that inverse has unbounded slope at zero -- around straight
+        ahead an arbitrarily small change in the commanded angle moves the steer
+        fraction by a lot -- which drives the lateral loop into oscillation. Below
+        ``steer_response_linear_below_deg`` the inverse is therefore a straight
+        line that meets the curve at the blend point, so the gain near zero is
+        bounded. The cost is that angles below the blend point are commanded
+        short, which the controller closes in feedback.
+        """
+        exponent = self._steer_response_exponent()
+        if exponent == 1.0:
+            return steer_norm
+        magnitude = min(abs(steer_norm), 1.0)
+        blend = self._steer_response_blend_norm()
+        if 0.0 < blend and magnitude < blend:
+            inverted = magnitude * blend ** (1.0 / exponent - 1.0)
+        else:
+            inverted = magnitude ** (1.0 / exponent)
+        return math.copysign(min(inverted, 1.0), steer_norm)
 
     def _legacy_steer_cmd(self, in_cmd):
         """Steer fraction for CARLA 0.9.x (PhysX). Needs _state_lock held.
@@ -1451,14 +1638,30 @@ class carla_ros2_interface(object):
                 return None
             return EgoState(
                 transform=self.ego_actor.get_transform(),
-                velocity=self.ego_actor.get_velocity(),
+                velocity=self._ego_velocity_world(),
                 angular_velocity=self.ego_actor.get_angular_velocity(),
-                steer_angle=self.ego_actor.get_wheel_steer_angle(
-                    carla.VehicleWheelLocation.FL_Wheel
-                ),
+                steer_angle=self._read_wheel_steer_angle(),
                 control=self.ego_actor.get_control(),
                 light_state=self._read_ego_light_state(),
             )
+
+    def _read_wheel_steer_angle(self):
+        """Measured FL wheel steer angle [deg], or 0.0 when CARLA cannot provide it.
+
+        On CARLA 0.10 (Chaos) get_wheel_steer_angle() always returns 0 and the reported
+        steering is synthesized from the applied control (see _steering_tire_angle), so the
+        measured value is discarded. Worse, the call itself intermittently raises under Chaos
+        physics (throwing std::exception mid-run and crashing the whole bridge). Since the
+        result is unused when the reading is unreliable, skip the call entirely in that case;
+        otherwise guard it and degrade to 0.0 instead of taking down the bridge.
+        Must be called with self._state_lock held (ego_actor access).
+        """
+        if not self._wheel_steer_angle_reliable:
+            return 0.0
+        try:
+            return self.ego_actor.get_wheel_steer_angle(carla.VehicleWheelLocation.FL_Wheel)
+        except RuntimeError:
+            return 0.0
 
     def _read_ego_light_state(self):
         """Ego vehicle light bitmask, or 0 when CARLA cannot provide it.
@@ -1500,15 +1703,17 @@ class carla_ros2_interface(object):
             return -math.radians(ego.steer_angle) * self._steer_report_scale()
         if self.physics_control is None:
             return 0.0
-        # get_control().steer is the requested steer fraction BEFORE the server
-        # applies the vehicle's speed-based steering_curve, so the bare fraction
-        # * max angle overstates the wheel angle whenever the curve attenuates
-        # steering at speed. Fold the same curve back in so the report matches
-        # the angle CARLA actually produced. control_callback intentionally
-        # leaves the curve to the server, and flatten_steering_curve makes this
-        # factor ~1.0 (identity curve), leaving the report unchanged.
+        # On 0.10 get_control().steer reads back 0 (the getter is unreliable, like
+        # get_wheel_steer_angle), which would make this feedback always 0 and starve the lateral
+        # controller — that starvation, not the command sign, was what drove the lateral loop
+        # unstable. Use the steer fraction we actually applied (cached in control_callback) with
+        # the same sign flip as the command path (Autoware CCW-positive vs CARLA CW-positive). The
+        # fraction is BEFORE the server's speed-based steering_curve, so fold the curve back in.
         curve_factor = self._steering_curve_factor(speed_mps)
-        return -ego.control.steer * self._max_wheel_steer_angle_rad() * curve_factor
+        # Same steer -> tyre angle law the command path inverts, applied forwards.
+        exponent = self._steer_response_exponent()
+        applied = math.copysign(abs(self._applied_steer_norm) ** exponent, self._applied_steer_norm)
+        return -applied * self._max_wheel_steer_angle_rad() * curve_factor
 
     @staticmethod
     def _blinker_reports(light_state, stamp):
@@ -1617,7 +1822,12 @@ class carla_ros2_interface(object):
             if not self.ego_actor:
                 return
             ego_transform = self.ego_actor.get_transform()
-            ego_vel = self.ego_actor.get_velocity()
+            # Derive the reported velocity from THIS transform's position, so the twist is exactly
+            # the derivative of the pose the controller/localization consumes (CARLA 0.10
+            # get_velocity() is unreliable; deriving from the published pose keeps pose and twist
+            # coherent, which a separate get_transform() sample would not guarantee).
+            self._update_derived_velocity(ego_transform.location)
+            ego_vel = self._ego_velocity_world()
             ego_ang_vel = self.ego_actor.get_angular_velocity()
 
         header = self.get_msg_header(frame_id="map")

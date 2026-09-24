@@ -40,6 +40,44 @@ default:
 
 # Per-blueprint overrides, merged over `default`.
 vehicles:
+  # BYD J6 gen2: a 7.26 x 2.47 x 3.07 m chassis, not the car `default` models.
+  #
+  # Measured on CARLA 0.10 by holding a fixed VehicleControl.steer at 2 m/s and
+  # reading the curvature off the transforms (yaw change per arc length, the one
+  # ego reading 0.10 reports reliably):
+  #
+  #   steer  0.15   0.30   0.50   -0.30
+  #   kappa  .00262 .01064 .03007 .01069  [1/m]
+  #
+  # kappa goes as steer squared, not as steer: reading those back through
+  # `tyre angle = steer**2 * max_steer` gives one wheel base (5.49 / 5.42 / 5.37 /
+  # 5.39 m, and 5.4 m matches the chassis length), while the proportional law the
+  # interface assumes by default spreads it over 36.7 - 11.0 m. So the fraction to
+  # send is the square ROOT of the normalized angle; steer_response_exponent says
+  # so, and the interface inverts it (see carla_ros.py _invert_steer_response).
+  #
+  # The 5.4 m wheel base is what Autoware has to plan with as well - see the
+  # byd_j6gen2_description vehicle model. Planning with sample_vehicle's 2.79 m
+  # here costs another factor of ~1.9 in curvature.
+  # steer_response_linear_below_deg is what keeps the loop stable. The exact
+  # inverse of a squared response is a square root, whose slope at zero is
+  # infinite: around straight ahead the tiniest change in the commanded angle
+  # swings the steer fraction, and the lateral loop oscillates (observed as the
+  # ego shaking itself off the road). Below this angle the inverse is a straight
+  # line meeting the curve at the blend point, which caps the gain near zero at
+  # 6.7 per rad (2.3x the plain proportional map with a 20 deg normalization,
+  # which did not oscillate), while every angle above it gets the response it
+  # asked for. The blend sits below the corner angles that matter: the
+  # proportional map crosses from under- to over-steer at 10.9 deg, and the
+  # jump to over-steer past that point is what pulls the ego into the curve.
+  # Measured on the Odaiba outbound corner: 8 deg left the road at y=42309,
+  # 4 deg carried it 21 m further to y=42331 with the peak steer command
+  # dropping from 16.0 to 11.8 deg, so the blend is being taken down again.
+  vehicle.byd.j6gen2:
+    steer_response_exponent: 2.0
+    steer_normalization_deg: 36.67 # reached at steer = 1.0 under the squared law
+    steer_response_linear_below_deg: 4.0
+
   vehicle.mini.cooper:
     mass: 1250.0 # [kg]
     wheels:

@@ -12,6 +12,7 @@
     <arg name="vehicle_type" default="vehicle.toyota.prius"/>
     <arg name="spawn_point" default="None" description="location of ego vehicle spawn (default is random), example = [0.2 , 4.1, 0.4, 0., 0., 0.]"/>
     <arg name="map_path" default="" description="Autoware map directory path (map name will be extracted for CARLA)"/>
+    <arg name="carla_launch_control" default="true" description="Launch this interface's own minimal control stack (trajectory_follower + vehicle_cmd_gate + shift_decider + external_cmd_selector). Set false to let a full Autoware control stack own control (e.g. e2e_simulator control:=true); the raw_vehicle_cmd_converter + twist2accel are always launched."/>
     <arg name="sync_mode" default="True"/>
     <arg name="fixed_delta_seconds" default="0.05" description="Time step for CARLA, FPS=1/value"/>
     <arg name="use_traffic_manager" default="False"/>
@@ -101,6 +102,11 @@
       name="vehicle_physics_config"
       default="$(find-pkg-share autoware_carla_interface)/config/vehicle_physics.yaml"
       description="YAML with the physics written onto the ego after it spawns (mass, steering curve, per-axle wheel settings). CARLA 0.10 gives every car the same placeholder physics, which does not match the vehicle Autoware plans for. Applied only on CARLA 0.10+ (calibrated for its placeholder physics; a no-op on 0.9.x, whose vehicles keep their own physics). Empty keeps CARLA's own values"
+    />
+    <arg
+      name="steer_response_exponent"
+      default="0.0"
+      description="Override the chassis steer-response exponent from config/vehicle_physics.yaml, for A/B runs. 0 (default) takes the file's value; 1 forces the plain proportional conversion; 2 the squared response measured on vehicle.byd.j6gen2"
     />
     <arg name="flatten_steering_curve" default="false" description="Replace the ego vehicle's speed-based steering curve with an identity curve (CARLA 0.10 corrupt-curve workaround)"/>
     <arg name="wake_sleeping_physics" default="false" description="Nudge the ego physics body awake when launching from standstill (CARLA 0.10 sleeping-body workaround; not needed on 0.9.15)"/>
@@ -225,6 +231,7 @@
       <param name="splatsim_lidar_grpc_port" value="$(var splatsim_lidar_grpc_port)"/>
       <param name="publish_ground_truth_localization" value="$(var use_e2e_planning)"/>
       <param name="max_wheel_steer_angle_deg" value="$(var max_wheel_steer_angle_deg)"/>
+      <param name="steer_response_exponent" value="$(var steer_response_exponent)"/>
       <param name="flatten_steering_curve" value="$(var flatten_steering_curve)"/>
       <param name="vehicle_physics_config" value="$(var vehicle_physics_config)"/>
       <param name="steering_lag_time_constant" value="$(var steering_lag_time_constant)"/>
@@ -367,7 +374,12 @@
         <remap from="output/accel" to="/localization/acceleration"/>
       </node>
 
-      <!-- Minimal control: trajectory follower only -->
+      <!-- Minimal control: trajectory follower only.
+           Gated so a full Autoware control stack (e2e_simulator control:=true, providing its
+           own trajectory_follower / vehicle_cmd_gate / operation-mode + MRM) can own control
+           instead; this interface then contributes only the raw_vehicle_cmd_converter + twist2accel.
+           Running both duplicates the gate at / and /control and stalls control. -->
+      <group if="$(var carla_launch_control)">
       <node_container pkg="rclcpp_components" exec="component_container_mt" name="e2e_control_container" namespace="" output="screen">
         <composable_node pkg="autoware_trajectory_follower_node" plugin="autoware::motion::control::trajectory_follower_node::Controller" name="trajectory_follower">
           <param name="use_sim_time" value="$(var use_sim_time)"/>
@@ -440,6 +452,7 @@
         <remap from="output/turn_indicators_cmd" to="/control/command/turn_indicators_cmd"/>
         <remap from="output/hazard_lights_cmd" to="/control/command/hazard_lights_cmd"/>
       </node>
+      </group>
     </group>
   </group>
 </launch>

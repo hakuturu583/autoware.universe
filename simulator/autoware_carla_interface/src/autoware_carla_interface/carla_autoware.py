@@ -14,6 +14,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
 import queue
 import random
 import signal
@@ -245,7 +246,35 @@ class InitializeInterface(object):
         if float(self.interface.param_values.get("max_wheel_steer_angle_deg", 0.0)) > 0.0:
             return
         self.interface.param_values["max_wheel_steer_angle_deg"] = float(steer_deg)
-        print(f"INFO: Steer normalization set to {float(steer_deg):.1f} deg from {path}.")
+        self.logger.info(f"Steer normalization set to {float(steer_deg):.1f} deg from {path}.")
+
+    def _apply_steer_response_exponent(self, settings, path):
+        """Take `steer_response_exponent` out of *settings* and give it to the interface.
+
+        Like steer_normalization_deg this describes the server's behaviour rather
+        than configuring it, so it is read here instead of being written onto
+        carla.VehiclePhysicsControl.
+        """
+        exponent = settings.pop("steer_response_exponent", None)
+        if float(self.interface.param_values.get("steer_response_exponent", 0.0)) > 0.0:
+            self.logger.info(
+                "Steer response exponent kept at the explicitly configured "
+                f"{float(self.interface.param_values['steer_response_exponent']):.2f}; "
+                f"ignoring the value in {path}."
+            )
+            exponent = None
+        if exponent is not None:
+            self.interface.param_values["steer_response_exponent"] = float(exponent)
+            self.logger.info(
+                f"Steer response exponent set to {float(exponent):.2f} from {path}."
+            )
+        blend = settings.pop("steer_response_linear_below_deg", None)
+        if blend is not None:
+            self.interface.param_values["steer_response_linear_below_deg"] = float(blend)
+            self.logger.info(
+                f"Steer response inverse kept linear below {float(blend):.2f} deg "
+                f"from {path}."
+            )
 
     @staticmethod
     def _write_physics_settings(physics, settings):
@@ -279,6 +308,9 @@ class InitializeInterface(object):
         correct physics -- to avoid changing steering gain and dynamics there.
         """
         path = str(self.interface.param_values.get("vehicle_physics_config", "")).strip()
+        self.logger.info(
+            f"Vehicle physics config for {self.ego_actor.type_id}: {path or '(none)'}"
+        )
         if not path:
             return
         if not self.interface.uses_chaos_physics:
@@ -294,13 +326,14 @@ class InitializeInterface(object):
             return
 
         self._apply_steer_normalization(settings, path)
+        self._apply_steer_response_exponent(settings, path)
         try:
             physics = self.ego_actor.get_physics_control()
             applied = self._write_physics_settings(physics, settings)
             self.ego_actor.apply_physics_control(physics)
             self.interface.physics_control = self.ego_actor.get_physics_control()
-            print(
-                f"INFO: Applied vehicle physics from {path} to {self.ego_actor.type_id} "
+            self.logger.info(
+                f"Applied vehicle physics from {path} to {self.ego_actor.type_id} "
                 f"({', '.join(applied) or 'nothing'})."
             )
         except (RuntimeError, TypeError, ValueError) as error:
@@ -514,6 +547,14 @@ class InitializeInterface(object):
         settings.fixed_delta_seconds = self.fixed_delta_seconds
         settings.synchronous_mode = self.sync_mode
         settings.no_rendering_mode = self.no_rendering_mode
+        # Physics substepping. A vehicle's tyre/suspension dynamics need a fine integration step;
+        # stepping them directly at fixed_delta_seconds (0.05 s / 20 Hz) lets CARLA 0.10 (Chaos)
+        # numerically diverge (the ego's velocity blows up to 100+ m/s regardless of throttle or
+        # brake after a few seconds). Force substepping so each frame is integrated in <=0.01 s
+        # slices. CARLA requires fixed_delta_seconds <= max_substep_delta_time * max_substeps.
+        settings.substepping = True
+        settings.max_substep_delta_time = 0.01
+        settings.max_substeps = max(10, int(math.ceil(self.fixed_delta_seconds / 0.01)))
         self.world.apply_settings(settings)
 
     def _wait_for_external_world(self, client):
