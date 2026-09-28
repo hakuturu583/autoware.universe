@@ -43,10 +43,13 @@ class Mission:
     Attributes:
         initial_pose: Where Autoware initializes localization.
         goal: Where Autoware plans the route to.
+        waypoints: Poses the route must pass through, in order.  Empty leaves
+            the way to the goal to Autoware, which plans the shortest one.
     """
 
     initial_pose: pb2.Pose
     goal: pb2.Pose
+    waypoints: tuple = ()
 
 
 class ScenarioBridgeClient:
@@ -102,7 +105,11 @@ class ScenarioBridgeClient:
         response = self._stub.GetMission(pb2.GetMissionRequest(), timeout=timeout)
         if not response.available:
             return None
-        return Mission(initial_pose=response.initial_pose, goal=response.goal)
+        return Mission(
+            initial_pose=response.initial_pose,
+            goal=response.goal,
+            waypoints=tuple(response.waypoints),
+        )
 
     def report_readiness(self, ready: bool, timeout: Optional[float] = None) -> None:
         """Push the readiness flag to the scenario framework.

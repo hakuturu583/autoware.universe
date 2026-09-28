@@ -359,7 +359,9 @@ PlannerOutput DiffusionPlannerCore::create_planner_output(
                                         autoware_internal_planning_msgs::msg::CandidateTrajectory>()
                                         .header(trajectory.header)
                                         .generator_id(generator_uuid)
-                                        .points(trajectory.points);
+                                        .points(trajectory.points)
+                                        .turn_indicators_command(
+                                          autoware_vehicle_msgs::msg::TurnIndicatorsCommand{});
 
     std_msgs::msg::String generator_name_msg;
     generator_name_msg.data = std::string("DiffusionPlanner_batch_") + std::to_string(i);

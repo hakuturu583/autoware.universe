@@ -22,7 +22,8 @@ sequence and exposes only a single readiness flag back to the scenario runner:
 1. poll ``GetMission`` until the scenario hands over an initial pose + goal;
 2. initialize localization at the initial pose (``/api/localization/initialize``) --
    skipped when ``initialize_localization`` is False (ground-truth / E2E stacks);
-3. set the route to the goal (``/api/routing/set_route_points``), but only once
+3. set the route to the goal, through the scenario's waypoints when it named
+   any (``/api/routing/set_route_points``), but only once
    localization has reached INITIALIZED (the mission planner starts the route from
    the current odometry pose and rejects requests before that);
 4. once localization is satisfied, the route is SET, and autonomous mode is
@@ -346,7 +347,10 @@ class ScenarioBridgeNode(Node):
         with self._lock:
             if self._mission is None:
                 self._mission = mission
-                self.get_logger().info("Received scenario mission; driving Autoware startup")
+                self.get_logger().info(
+                    f"Received scenario mission ({len(mission.waypoints)} waypoint(s)); "
+                    "driving Autoware startup"
+                )
 
     # ------------------------------------------------------------------
     # Startup steps (each called under _lock, each idempotent + retrying)
@@ -441,6 +445,11 @@ class ScenarioBridgeNode(Node):
         request.header.stamp = self.get_clock().now().to_msg()
         request.option.allow_goal_modification = True
         request.goal = _to_ros_pose(self._mission.goal)
+        # The scenario's waypoints, when it named any. Without them the planner
+        # takes the shortest route to the goal, which for a scenario that is a
+        # particular drive -- one rendered from a recorded run -- is a different
+        # drive, and leaves whatever was rendered.
+        request.waypoints = [_to_ros_pose(pose) for pose in self._mission.waypoints]
         self._issue(self._route_cli, request, "_route_requested", "route set")
 
     def _maybe_engage(self) -> None:

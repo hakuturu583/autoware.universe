@@ -16,6 +16,7 @@ from collections import deque
 from collections import namedtuple
 import math
 import threading
+import time
 
 from autoware_perception_msgs.msg import DetectedObject
 from autoware_perception_msgs.msg import DetectedObjectKinematics
@@ -43,6 +44,10 @@ from geometry_msgs.msg import TransformStamped
 from nav_msgs.msg import Odometry
 import numpy
 import rclpy
+from rclpy.qos import QoSDurabilityPolicy
+from rclpy.qos import QoSHistoryPolicy
+from rclpy.qos import QoSProfile
+from rclpy.qos import QoSReliabilityPolicy
 from rosgraph_msgs.msg import Clock
 from sensor_msgs.msg import CameraInfo
 from sensor_msgs.msg import Imu
@@ -196,6 +201,9 @@ class carla_ros2_interface(object):
             "spawn_point_ground_snap": (rclpy.Parameter.Type.BOOL, False),
             "spawn_point_ground_offset_z": (rclpy.Parameter.Type.DOUBLE, 0.5),
             "initial_pose_ground_offset_z": (rclpy.Parameter.Type.DOUBLE, 1.0),
+            # How long to wait for the ego the scenario places before spawning
+            # one here instead (scenario_mode only; see _spawn_ego_actor).
+            "ego_attach_timeout": (rclpy.Parameter.Type.DOUBLE, 60.0),
             "force_load_world": (rclpy.Parameter.Type.BOOL, False),
             # Scenario mode (set from the launch file's with_scenario). The CARLA
             # scenario runner then owns the world: it loads/reloads the map and
@@ -412,6 +420,30 @@ class carla_ros2_interface(object):
         self.sub_vehicle_initialpose = self.ros2_node.create_subscription(
             PoseWithCovarianceStamped, "initialpose", self.initialpose_callback, 1
         )
+        # The scenario bridge publishes its initial pose once, on a latched
+        # (TRANSIENT_LOCAL) publisher, and it does so well before this node has
+        # a world to place an ego in. The volatile subscription above is
+        # compatible with that publisher, so the two connect -- but a volatile
+        # reader is not given the sample that was latched before it arrived, and
+        # since the bridge never publishes it again the pose was simply lost and
+        # the ego stayed wherever spawn_point had put it.
+        #
+        # A second subscription asking for TRANSIENT_LOCAL is given that sample
+        # on connection, whenever this node comes up. Both are needed: RViz's
+        # "2D Pose Estimate" publishes volatile, which a TRANSIENT_LOCAL reader
+        # is incompatible with and would never receive.
+        # https://design.ros2.org/articles/qos.html
+        self.sub_vehicle_initialpose_latched = self.ros2_node.create_subscription(
+            PoseWithCovarianceStamped,
+            "initialpose",
+            self.initialpose_callback,
+            QoSProfile(
+                depth=1,
+                history=QoSHistoryPolicy.KEEP_LAST,
+                reliability=QoSReliabilityPolicy.RELIABLE,
+                durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            ),
+        )
         self.sub_turn_indicators = self.ros2_node.create_subscription(
             TurnIndicatorsCommand,
             "/control/command/turn_indicators_cmd",
@@ -613,6 +645,9 @@ class carla_ros2_interface(object):
         # actor id -> [Autoware traffic_light_group_id, ...] resolved by the
         # position matcher (or the OpenDRIVE-id fallback).
         self._traffic_light_actor_groups = None
+        # Every traffic_light group id the lanelet2 map defines, filled in when a map
+        # is matched against. force_green publishes green for all of them.
+        self._map_traffic_light_groups = set()
 
         # Vehicle and control state
         self.prev_timestamp = None
@@ -925,8 +960,11 @@ class carla_ros2_interface(object):
             return
         self._apply_initialpose(data)
 
-    def _apply_initialpose(self, data):
-        """Convert a map-frame initial pose to CARLA and teleport the ego."""
+    def initialpose_to_carla_transform(self, data):
+        """Convert a map-frame initial pose to the CARLA transform to place on.
+
+        The map origin must already be resolved.
+        """
         pose = data.pose.pose
         origin_x, origin_y = self._current_map_origin()
         carla_pose_transform = ros_pose_to_carla_transform(
@@ -953,6 +991,11 @@ class carla_ros2_interface(object):
             )
         else:
             carla_pose_transform.location.z += 2.0
+        return carla_pose_transform
+
+    def _apply_initialpose(self, data):
+        """Convert a map-frame initial pose to CARLA and teleport the ego."""
+        carla_pose_transform = self.initialpose_to_carla_transform(data)
 
         with self._state_lock:
             if self.ego_actor is not None:
@@ -1932,6 +1975,12 @@ class carla_ros2_interface(object):
             ambiguity_ratio=self.param_values["traffic_light.match_ratio"],
         )
         self._log_traffic_light_match(map_lights, result, override_count=override_count)
+        # Every group the map defines, matched or not: force_green publishes for all
+        # of them, since a group no CARLA light resolved to is otherwise never heard
+        # from and the planner waits at it forever.
+        self._map_traffic_light_groups = {
+            group_id for group_ids in map_lights.head_groups.values() for group_id in group_ids
+        }
         return result.assignments
 
     def _fallback_opendrive_groups(self, actors):
@@ -2039,13 +2088,26 @@ class carla_ros2_interface(object):
             return
         if self._traffic_light_actor_groups is None:
             self._resolve_traffic_light_groups()
-        if not self._traffic_light_actor_groups:
+        if not self._traffic_light_actor_groups and not self._map_traffic_light_groups:
+            # Nothing resolved and no map to fall back on: there is nothing to say.
             return
 
         # Aggregate by group id: several physical heads (actors) can belong to the
         # same regulatory element, and they show the same aspect, so one element per
         # group is emitted.
         group_elements = {}
+        # force_green is the camera-less mode: every CARLA light is green and frozen,
+        # so which map group a light resolved to cannot change any aspect. What it does
+        # change is which groups are heard from at all -- position matching drops the
+        # ambiguous and the too-far, and a map group with no CARLA light behind it never
+        # had a source. A group that never publishes reads to the planner as a signal it
+        # has yet to see, and it holds the ego at that stop line indefinitely. So in this
+        # mode every group the map defines is published green, and the matched lights
+        # below only confirm it.
+        if self.param_values.get("traffic_light.force_green") and self._map_traffic_light_groups:
+            green = (TrafficLightElement.GREEN, TrafficLightElement.SOLID_ON)
+            for group_id in self._map_traffic_light_groups:
+                group_elements[group_id] = green
         for actor in self._traffic_light_actors:
             group_ids = self._traffic_light_actor_groups.get(actor.id)
             if not group_ids:

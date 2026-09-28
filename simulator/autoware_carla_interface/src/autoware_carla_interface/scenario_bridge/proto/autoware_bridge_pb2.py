@@ -23,40 +23,38 @@
 # source: autoware_bridge.proto
 # Protobuf Python Version: 4.25.1
 """Generated protocol buffer code."""
-
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import descriptor_pool as _descriptor_pool
 from google.protobuf import symbol_database as _symbol_database
 from google.protobuf.internal import builder as _builder
-
 # @@protoc_insertion_point(imports)
 
 _sym_db = _symbol_database.Default()
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(
-    b'\n\x15\x61utoware_bridge.proto\x12*autoware_carla_scenario.autoware_bridge.v0"*\n\x07Vector3\x12\t\n\x01x\x18\x01 \x01(\x01\x12\t\n\x01y\x18\x02 \x01(\x01\x12\t\n\x01z\x18\x03 \x01(\x01"8\n\nQuaternion\x12\t\n\x01w\x18\x01 \x01(\x01\x12\t\n\x01x\x18\x02 \x01(\x01\x12\t\n\x01y\x18\x03 \x01(\x01\x12\t\n\x01z\x18\x04 \x01(\x01"\x97\x01\n\x04Pose\x12\x45\n\x08position\x18\x01 \x01(\x0b\x32\x33.autoware_carla_scenario.autoware_bridge.v0.Vector3\x12H\n\x08rotation\x18\x02 \x01(\x0b\x32\x36.autoware_carla_scenario.autoware_bridge.v0.Quaternion"\x13\n\x11GetMissionRequest"\xaf\x01\n\x12GetMissionResponse\x12\x11\n\tavailable\x18\x01 \x01(\x08\x12\x46\n\x0cinitial_pose\x18\x02 \x01(\x0b\x32\x30.autoware_carla_scenario.autoware_bridge.v0.Pose\x12>\n\x04goal\x18\x03 \x01(\x0b\x32\x30.autoware_carla_scenario.autoware_bridge.v0.Pose"\'\n\x16ReportReadinessRequest\x12\r\n\x05ready\x18\x01 \x01(\x08"\x19\n\x17ReportReadinessResponse2\xbb\x02\n\x0e\x41utowareBridge\x12\x8b\x01\n\nGetMission\x12=.autoware_carla_scenario.autoware_bridge.v0.GetMissionRequest\x1a>.autoware_carla_scenario.autoware_bridge.v0.GetMissionResponse\x12\x9a\x01\n\x0fReportReadiness\x12\x42.autoware_carla_scenario.autoware_bridge.v0.ReportReadinessRequest\x1a\x43.autoware_carla_scenario.autoware_bridge.v0.ReportReadinessResponseb\x06proto3'
-)
+
+
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x15\x61utoware_bridge.proto\x12*autoware_carla_scenario.autoware_bridge.v0\"*\n\x07Vector3\x12\t\n\x01x\x18\x01 \x01(\x01\x12\t\n\x01y\x18\x02 \x01(\x01\x12\t\n\x01z\x18\x03 \x01(\x01\"8\n\nQuaternion\x12\t\n\x01w\x18\x01 \x01(\x01\x12\t\n\x01x\x18\x02 \x01(\x01\x12\t\n\x01y\x18\x03 \x01(\x01\x12\t\n\x01z\x18\x04 \x01(\x01\"\x97\x01\n\x04Pose\x12\x45\n\x08position\x18\x01 \x01(\x0b\x32\x33.autoware_carla_scenario.autoware_bridge.v0.Vector3\x12H\n\x08rotation\x18\x02 \x01(\x0b\x32\x36.autoware_carla_scenario.autoware_bridge.v0.Quaternion\"\x13\n\x11GetMissionRequest\"\xf4\x01\n\x12GetMissionResponse\x12\x11\n\tavailable\x18\x01 \x01(\x08\x12\x46\n\x0cinitial_pose\x18\x02 \x01(\x0b\x32\x30.autoware_carla_scenario.autoware_bridge.v0.Pose\x12>\n\x04goal\x18\x03 \x01(\x0b\x32\x30.autoware_carla_scenario.autoware_bridge.v0.Pose\x12\x43\n\twaypoints\x18\x04 \x03(\x0b\x32\x30.autoware_carla_scenario.autoware_bridge.v0.Pose\"\'\n\x16ReportReadinessRequest\x12\r\n\x05ready\x18\x01 \x01(\x08\"\x19\n\x17ReportReadinessResponse2\xbb\x02\n\x0e\x41utowareBridge\x12\x8b\x01\n\nGetMission\x12=.autoware_carla_scenario.autoware_bridge.v0.GetMissionRequest\x1a>.autoware_carla_scenario.autoware_bridge.v0.GetMissionResponse\x12\x9a\x01\n\x0fReportReadiness\x12\x42.autoware_carla_scenario.autoware_bridge.v0.ReportReadinessRequest\x1a\x43.autoware_carla_scenario.autoware_bridge.v0.ReportReadinessResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
-_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, "autoware_bridge_pb2", _globals)
+_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'autoware_bridge_pb2', _globals)
 if _descriptor._USE_C_DESCRIPTORS == False:
-    DESCRIPTOR._options = None
-    _globals["_VECTOR3"]._serialized_start = 69
-    _globals["_VECTOR3"]._serialized_end = 111
-    _globals["_QUATERNION"]._serialized_start = 113
-    _globals["_QUATERNION"]._serialized_end = 169
-    _globals["_POSE"]._serialized_start = 172
-    _globals["_POSE"]._serialized_end = 323
-    _globals["_GETMISSIONREQUEST"]._serialized_start = 325
-    _globals["_GETMISSIONREQUEST"]._serialized_end = 344
-    _globals["_GETMISSIONRESPONSE"]._serialized_start = 347
-    _globals["_GETMISSIONRESPONSE"]._serialized_end = 522
-    _globals["_REPORTREADINESSREQUEST"]._serialized_start = 524
-    _globals["_REPORTREADINESSREQUEST"]._serialized_end = 563
-    _globals["_REPORTREADINESSRESPONSE"]._serialized_start = 565
-    _globals["_REPORTREADINESSRESPONSE"]._serialized_end = 590
-    _globals["_AUTOWAREBRIDGE"]._serialized_start = 593
-    _globals["_AUTOWAREBRIDGE"]._serialized_end = 908
+  DESCRIPTOR._options = None
+  _globals['_VECTOR3']._serialized_start=69
+  _globals['_VECTOR3']._serialized_end=111
+  _globals['_QUATERNION']._serialized_start=113
+  _globals['_QUATERNION']._serialized_end=169
+  _globals['_POSE']._serialized_start=172
+  _globals['_POSE']._serialized_end=323
+  _globals['_GETMISSIONREQUEST']._serialized_start=325
+  _globals['_GETMISSIONREQUEST']._serialized_end=344
+  _globals['_GETMISSIONRESPONSE']._serialized_start=347
+  _globals['_GETMISSIONRESPONSE']._serialized_end=591
+  _globals['_REPORTREADINESSREQUEST']._serialized_start=593
+  _globals['_REPORTREADINESSREQUEST']._serialized_end=632
+  _globals['_REPORTREADINESSRESPONSE']._serialized_start=634
+  _globals['_REPORTREADINESSRESPONSE']._serialized_end=659
+  _globals['_AUTOWAREBRIDGE']._serialized_start=662
+  _globals['_AUTOWAREBRIDGE']._serialized_end=977
 # @@protoc_insertion_point(module_scope)

@@ -48,7 +48,8 @@ void append_candidate(
       autoware_internal_planning_msgs::msg::CandidateTrajectory>()
       .header(trajectory.header)
       .generator_id(generator_uuid)
-      .points(trajectory.points);
+      .points(trajectory.points)
+      .turn_indicators_command(autoware_vehicle_msgs::msg::TurnIndicatorsCommand{});
 
   std_msgs::msg::String generator_name_msg;
   generator_name_msg.data = generator_name;
